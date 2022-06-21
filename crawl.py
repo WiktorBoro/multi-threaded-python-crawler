@@ -5,9 +5,10 @@ from pandas import DataFrame
 from datetime import datetime
 import threading
 from time import sleep
+from re import findall
 
 
-class CrawlInit:
+class _CrawlInit:
     def __init__(self,
                  url,
                  everything=False,
@@ -32,35 +33,36 @@ class CrawlInit:
         self._title = title
         self._meta_description = meta_description
         self._img = img
-        self._domain = match(r'(https?:\/\/)?([^\/]+)(\/.*)?', self._url).groups()[1]
-        if 'www.' in self._domain:
-            self._domain = self._domain.replace("www.", "")
+        self._domain = match(r'(https?:\/\/)?(www\.)?([^\/]+)(\/.*)?', self._url).groups()[2]
         self._decode = decode
 
 
-class PageToCrawl:
-    def __init__(self, started_page):
-        self._page_to_crawl = ["https://"+started_page+"/", "https://"+started_page]
+class _PageToCrawl:
+    def __init__(self, started_page: str):
 
-    def get_page_to_crawl(self):
+        self._page_to_crawl = [started_page]
+
+    def get_page_to_crawl(self) -> list:
         return self._page_to_crawl
 
     def set_page_to_crawl(self, internal_links_from_crawl):
         self._page_to_crawl += list(filter(lambda x: x not in self._page_to_crawl, internal_links_from_crawl))
 
 
-class CrawlEntirePage(CrawlInit):
+class CrawlEntirePage(_CrawlInit):
 
     def start_crawl(self,
                     number_of_threaded=1,
                     sleep_time=0,
-                    file_loc=''):
+                    file_loc='',
+                    condition_allow='',
+                    condition_disallow=''):
 
         self._internal_links = True
 
-        page_to_crawl = PageToCrawl(self._domain)
+        pages_to_crawl = _PageToCrawl(self._url)
 
-        full_file_path = file_loc + self._domain + str(datetime.now()) + '.csv'
+        full_file_path = file_loc + self._domain + " " + str(datetime.now().strftime("%d-%m-%Y %H-%M")) + '.csv'
 
         CrawlOnePage(url=self._url,
                      everything=self._everything,
@@ -72,31 +74,50 @@ class CrawlEntirePage(CrawlInit):
                      canonical=self._canonical,
                      title=self._title,
                      meta_description=self._meta_description,
-                     img=self._img).save_result_to_csv(full_file_path, page_to_crawl)
+                     img=self._img).save_result_to_csv(full_file_path, pages_to_crawl)
 
-        crawled_page_num = 2
+        crawled_page_num = 1
         while True:
+            # +1 because we always start with one main thread, and we want run only "extra" thread
             for i in range(number_of_threaded-threading.active_count()+1):
+
+                page_to_crawl = pages_to_crawl.get_page_to_crawl()[crawled_page_num]
+
                 try:
-                    threading.Thread(target=self._run_thread, args=(crawled_page_num,
+                    if condition_allow:
+                        if findall(condition_allow, page_to_crawl):
+                            pass
+                        else:
+                            crawled_page_num += 1
+                            continue
+                    if condition_disallow:
+                        if findall(condition_disallow, page_to_crawl):
+                            crawled_page_num += 1
+                            continue
+
+                    threading.Thread(target=self._run_thread, args=(page_to_crawl,
                                                                     full_file_path,
-                                                                    page_to_crawl)).start()
+                                                                    pages_to_crawl)).start()
+                    # -1 because we want print only "extra" thread without main thread
                     print(f"Active thread {threading.active_count() - 1}")
-                    print(f"Current page {crawled_page_num}/{len(page_to_crawl.get_page_to_crawl())}")
+                    print(f"Current page {crawled_page_num}/{len(pages_to_crawl.get_page_to_crawl())}")
                     crawled_page_num += 1
                     sleep(sleep_time)
                 except IndexError:
+                    # if we get IndexError we wait 2 seconds to make sure that other threads do not bring new links
                     sleep(2)
                     crawled_page_num += 1
-                    if crawled_page_num >= len(page_to_crawl.get_page_to_crawl()):
+                    # if the current number is still outside the list we need to break loop
+                    if crawled_page_num >= len(pages_to_crawl.get_page_to_crawl()):
                         break
-            if crawled_page_num >= len(page_to_crawl.get_page_to_crawl()):
-                print(f"Current page {crawled_page_num}/{len(page_to_crawl.get_page_to_crawl())}")
+            # if the current number is outside the list we need to break loop
+            if crawled_page_num >= len(pages_to_crawl.get_page_to_crawl()):
+                print(f"Current page {crawled_page_num}/{len(pages_to_crawl.get_page_to_crawl())}")
                 print("DONE!")
                 break
 
-    def _run_thread(self, crawled_page_num, full_file_path, page_to_crawl):
-        CrawlOnePage(page_to_crawl.get_page_to_crawl()[crawled_page_num],
+    def _run_thread(self, url_to_crawl, full_file_path, pages_to_crawl):
+        CrawlOnePage(url=url_to_crawl,
                      everything=self._everything,
                      outbound_links=self._outbound_links,
                      internal_links=self._internal_links,
@@ -106,10 +127,10 @@ class CrawlEntirePage(CrawlInit):
                      canonical=self._canonical,
                      title=self._title,
                      meta_description=self._meta_description,
-                     img=self._img).save_result_to_csv(full_file_path, page_to_crawl)
+                     img=self._img).save_result_to_csv(full_file_path, pages_to_crawl)
 
 
-class CrawlOnePage(CrawlInit):
+class CrawlOnePage(_CrawlInit):
     def crawl_one_page(self, result_dict):
         response = self._get_response(self._url, result_dict)
 
@@ -144,7 +165,7 @@ class CrawlOnePage(CrawlInit):
         if any([self._internal_links, self._outbound_links, self._everything]):
             self._get_links(soup=soup, result_dict=result_dict)
 
-    def _get_response(self, url, result_dict):
+    def _get_response(self, url: str, result_dict: dict):
         try:
             response = get(url, timeout=10)
         except exceptions.RequestException:
@@ -221,11 +242,11 @@ class CrawlOnePage(CrawlInit):
         if any([self._internal_links, self._everything]):
             result_dict[self._url].update({'internal links':
                                                    {k: v for k, v in links_dict.items()
-                                                    if match(f'https?:\/\/{self._domain}.*', k)}})
+                                                    if match(f'https?:\/\/(www\.)?{self._domain}.*', k)}})
         if any([self._outbound_links, self._everything]):
             result_dict[self._url].update({'outgoing links':
                                                    {k: v for k, v in links_dict.items()
-                                                    if match(f'(https?:\/\/(?!{self._domain}).*)', k)}})
+                                                    if match(f'(https?:\/\/(www\.)?(?!{self._domain}).*)', k)}})
 
     def return_result_dict(self):
         result_dict = {self._url: {}}
