@@ -33,7 +33,7 @@ class _CrawlInit:
         self._title = title
         self._meta_description = meta_description
         self._img = img
-        self._domain = match(r'(https?:\/\/)?(www\.)?([^\/]+)(\/.*)?', self._url).groups()[2]
+        self._domain = match(r'(https?:\/\/)?([^\/]+)(\/.*)?', self._url).groups()[1]
         self._decode = decode
 
 
@@ -64,7 +64,7 @@ class CrawlEntirePage(_CrawlInit):
 
         full_file_path = file_loc + self._domain + " " + str(datetime.now().strftime("%d-%m-%Y %H-%M")) + '.csv'
 
-        CrawlOnePage(url=self._url,
+        ScrapOnePage(url=self._url,
                      everything=self._everything,
                      outbound_links=self._outbound_links,
                      internal_links=self._internal_links,
@@ -117,7 +117,7 @@ class CrawlEntirePage(_CrawlInit):
                 break
 
     def _run_thread(self, url_to_crawl, full_file_path, pages_to_crawl):
-        CrawlOnePage(url=url_to_crawl,
+        ScrapOnePage(url=url_to_crawl,
                      everything=self._everything,
                      outbound_links=self._outbound_links,
                      internal_links=self._internal_links,
@@ -130,8 +130,8 @@ class CrawlEntirePage(_CrawlInit):
                      img=self._img).save_result_to_csv(full_file_path, pages_to_crawl)
 
 
-class CrawlOnePage(_CrawlInit):
-    def crawl_one_page(self, result_dict):
+class ScrapOnePage(_CrawlInit):
+    def _crawl_one_page(self, result_dict):
         response = self._get_response(self._url, result_dict)
 
         if self._url != response.url:
@@ -210,6 +210,10 @@ class CrawlOnePage(_CrawlInit):
             if match(r'^\/', isrc):
                 isrc = 'https://' + self._domain + isrc
 
+            # if we don't start with slash and http we need to add this url to rest of adress
+            if not match(r'^http', isrc):
+                isrc = self._url + isrc if self._url[-1] == "/" else self._url + "/" + isrc
+
             if isrc in img_dict:
                 img_dict[isrc] += 1
             elif isrc not in img_dict:
@@ -226,11 +230,15 @@ class CrawlOnePage(_CrawlInit):
             except KeyError:
                 continue
 
-            if match(r'(^#$)|(^$)', ihref):
+            if findall(r'#|(^$)|(tel:)|(mailto:)', ihref):
                 continue
 
             if match(r'^\/', ihref):
                 ihref = 'https://' + self._domain + ihref
+
+            # if we don't start with slash and http we need to add this url to rest of adress
+            if not match(r'^http', ihref):
+                ihref = self._url + ihref if self._url[-1] == "/" else self._url + "/" + ihref
 
             if ihref in links_dict:
                 links_dict[ihref][0] += 1
@@ -242,20 +250,20 @@ class CrawlOnePage(_CrawlInit):
         if any([self._internal_links, self._everything]):
             result_dict[self._url].update({'internal links':
                                                    {k: v for k, v in links_dict.items()
-                                                    if match(f'https?:\/\/(www\.)?{self._domain}.*', k)}})
+                                                    if match(f'https?:\/\/(www\.)?{self._domain.replace("www.", "")}.*', k)}})
         if any([self._outbound_links, self._everything]):
             result_dict[self._url].update({'outgoing links':
                                                    {k: v for k, v in links_dict.items()
-                                                    if match(f'(https?:\/\/(www\.)?(?!{self._domain}).*)', k)}})
+                                                    if not match(f'https?:\/\/(www\.)?{self._domain.replace("www.", "")}.*', k)}})
 
     def return_result_dict(self):
         result_dict = {self._url: {}}
-        self.crawl_one_page(result_dict)
+        self._crawl_one_page(result_dict)
         return result_dict
 
     def save_result_to_csv(self, full_file_path, page_to_crawl):
         result_dict = {self._url: {}}
-        self.crawl_one_page(result_dict)
+        self._crawl_one_page(result_dict)
 
         if 'internal links' in result_dict[self._url].keys():
             page_to_crawl.set_page_to_crawl(set(result_dict[self._url]['internal links']))
